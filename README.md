@@ -9,7 +9,7 @@
 - **目标模型**：ASM-HEMT CMC 标准紧凑模型
 - **目标工具**：概伦 MeQLab、Primarius Modeling MCP Server
 
-> 当前版本是最小可运行原型，已实现 LangGraph 状态流和 DC I-V CSV 数据分析。MeQLab/MCP、真实参数拟合、ASM-HEMT 模型卡和物理 QA 将在后续版本中逐步接入。
+> 当前版本已完成 LangGraph 主流程、四类测量数据 CSV 分析，以及国产大模型 API 的 Mock/Live 调用接口。MeQLab/MCP、真实参数拟合、ASM-HEMT 模型卡和物理 QA 尚未接入。
 
 ## 项目目标
 
@@ -63,21 +63,33 @@ flowchart TD
 
 ## 当前功能
 
-当前最小原型包含：
+当前数据输入和模型决策原型包含：
 
 - LangGraph 状态定义；
 - `load_data` 数据加载节点；
-- `analyze_data` DC I-V 基本特征分析节点；
+- `analyze_data` 多类型测量数据特征分析节点；
 - CSV 数据读取；
-- DC I-V 数据点数量、最大漏极电流和栅极电压范围统计。
+- DC I-V 数据点数量、最大漏极电流和栅极电压范围统计；
+- C-V 电容和栅极电压范围统计；
+- Pulse I-V 最大脉冲漏极电流统计；
+- S 参数频率范围和 `S21` 幅值统计；
+- 国产大模型 API 的统一调用封装；
+- 未配置密钥时的本地 Mock 决策模式；
+- 配置密钥后通过 OpenAI 兼容接口调用远程模型；
+- 真实模型响应的 JSON 解析和 Token 使用量记录；
+- API 密钥缺失时的明确错误提示。
 
 当前演示数据位于：
 
 ```text
-data/demo_dc_iv.csv
+data/
+├── demo_dc_iv.csv
+├── demo_cv.csv
+├── demo_pulse_iv.csv
+└── demo_s_params.csv
 ```
 
-数据格式如下：
+DC I-V 数据格式如下：
 
 ```csv
 Vgs,Vds,Ids
@@ -90,7 +102,15 @@ Vgs,Vds,Ids
 2,5,0.85
 ```
 
-其中电压单位为 V，漏极电流单位建议使用 A。
+其他演示数据采用以下列名：
+
+```text
+C-V:       Vg,Cgg
+Pulse I-V: Vgs,Vds,Ids_pulse
+S 参数:    Frequency,S11_real,S11_imag,S21_real,S21_imag
+```
+
+其中电压单位为 V，漏极电流单位建议使用 A，电容单位由数据文件自行约定，频率单位建议使用 Hz。
 
 ## 环境要求
 
@@ -108,7 +128,7 @@ python --version
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-python -m pip install -U langgraph langchain python-dotenv pydantic
+python -m pip install -r requirements.txt
 ```
 
 如果 PowerShell 提示禁止运行脚本，可以仅对当前终端临时放行：
@@ -126,12 +146,30 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 python main.py
 ```
 
+默认情况下，程序使用 Mock 模式，不需要 API 密钥。若要启用真实大模型，先将 `.env.example` 复制为项目根目录下的 `.env`，然后只在 `.env` 中填写配置：
+
+```text
+LLM_ENABLED=true
+LLM_API_KEY=你的模型服务密钥
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-v4-flash
+```
+
+不要把真实密钥填写到 `.env.example`、代码文件或 README 中。`.env` 已被加入 `.gitignore`，不要将真实密钥提交到 GitHub。`LLM_BASE_URL` 和 `LLM_MODEL` 可以替换为其他比赛允许的国产大模型服务配置。
+
 预期输出：
 
 ```text
 Agent 运行结果：
-{'data_type': 'DC I-V', 'point_count': 7, 'max_Ids': 0.85, 'min_Vgs': -4.0, 'max_Vgs': 2.0}
+dc_iv: {'data_type': 'DC I-V', 'point_count': 7, 'max_Ids': 0.85, 'min_Vgs': -4.0, 'max_Vgs': 2.0}
+cv: {'data_type': 'C-V', 'point_count': 7, 'min_Cgg': 4.2e-07, 'max_Cgg': 1.05e-06, 'min_Vg': -4.0, 'max_Vg': 2.0}
+pulse_iv: {'data_type': 'Pulse I-V', 'point_count': 5, 'max_Ids_pulse': 0.88}
+s_params: {'data_type': 'S 参数', 'point_count': 4, 'min_frequency': 1000000000.0, 'max_frequency': 4000000000.0, 'max_S21_magnitude': 2.1213203435596424}
+大模型状态: mock
+建模建议: {'next_step': '先进行 DC I-V 参数提取，再用 C-V 和 Pulse I-V 校准模型', 'reason': '当前未启用真实大模型 API，使用本地演示建议', 'parameters_to_check': ['Vth', 'Ids', 'Cgg', '自热和陷阱参数']}
 ```
+
+启用真实模型后，`大模型状态` 应为 `live`。程序不会下载模型到本地，而是通过配置的 API 地址远程调用模型服务。
 
 ## 目录结构
 
@@ -140,8 +178,15 @@ Agent 运行结果：
 ```text
 .
 ├── main.py
+├── llm_client.py
+├── requirements.txt
+├── .env.example
+├── .gitignore
 ├── data/
-│   └── demo_dc_iv.csv
+│   ├── demo_dc_iv.csv
+│   ├── demo_cv.csv
+│   ├── demo_pulse_iv.csv
+│   └── demo_s_params.csv
 ├── problem3_gan_hemt_agent.pdf
 └── README.md
 ```
@@ -279,8 +324,9 @@ Card_i_Score = QA_pass_rate × (1 − Curve_RMSE_normalized)
 - [x] 跑通 LangGraph 最小工作流。
 - [x] 读取 DC I-V CSV 数据。
 - [x] 输出基本曲线统计特征。
-- [ ] 增加 C-V、Pulse I-V、S 参数数据接口。
-- [ ] 增加国产大模型 API 封装。
+- [x] 增加 C-V、Pulse I-V、S 参数数据接口。
+- [x] 增加国产大模型 API 兼容封装和 Mock 模式。
+- [ ] 配置真实模型服务并完成 API 联调。
 - [ ] 增加 MCP 客户端和 MeQLab 工具封装。
 - [ ] 增加 ASM-HEMT 参数模式和参数约束。
 - [ ] 增加分阶段拟合与自动重试。
